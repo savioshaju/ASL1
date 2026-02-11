@@ -47,17 +47,39 @@ export default function Avatar() {
 
   const playText = async (text) => {
     if (!apiRef.current || isPlayingRef.current) return;
-
     isPlayingRef.current = true;
 
-    const letters = text
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, "") // sanitize
-      .split("");
+    const words = text.toLowerCase().trim().split(/\s+/);
 
-    for (const letter of letters) {
-      apiRef.current.playSign(letter);
-      await new Promise((res) => setTimeout(res, 900)); // animation gap
+    let i = 0;
+
+    while (i < words.length) {
+
+      let matched = false;
+
+      for (let len = 3; len > 0; len--) {
+        if (i + len > words.length) continue;
+
+        const phrase = words.slice(i, i + len).join(" ");
+
+        if (apiRef.current.playWord?.(phrase)) {
+          await new Promise((r) => setTimeout(r, 1300));
+          i += len;
+          matched = true;
+          break;
+        }
+      }
+
+      if (!matched) {
+        const word = words[i];
+
+        for (const ch of word) {
+          apiRef.current.playSign(ch);
+          await new Promise((r) => setTimeout(r, 900));
+        }
+
+        i++;
+      }
     }
 
     isPlayingRef.current = false;
@@ -81,7 +103,6 @@ export default function Avatar() {
         </div>
       )}
 
-      {/* UI Controls (Glassmorphism) */}
       <div className="absolute bottom-6 mx-auto z-10 w-[95%] md:w-[90%] max-w-4xl p-4 rounded-2xl bg-white/30 backdrop-blur-md border border-white/40 shadow-xl flex flex-col gap-4 transition-all hover:bg-white/40">
         <div className="flex items-center justify-between px-2">
           <h2 className="text-gray-800 font-bold text-lg tracking-tight">ASL Dictionary</h2>
@@ -93,7 +114,6 @@ export default function Avatar() {
             >
               {cameraSide} View
             </button>
-            <span className="text-xs font-mono text-gray-600 bg-white/50 px-2 py-1 rounded flex items-center">Interactive</span>
           </div>
         </div>
         <div className="flex gap-2 justify-center">

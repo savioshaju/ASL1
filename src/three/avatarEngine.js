@@ -6,74 +6,81 @@ import { updatePhysics, updateIdleDrift } from "../Components/physics";
 import { FaceController } from "../Components/facialAnimation";
 import { createBoneProxy, runASLSign } from "../Components/aslProxy";
 import { CAMERA_POSITIONS } from "./config";
+import { wordMap } from "../Components/wordMap";
+
 
 export function initAvatar(mountEl, onLoaded) {
   let stop = false;
+  let isWordPlaying = false;
 
-  // =============================
-  // Scene / Camera / Renderer
-  // =============================
   const { scene, camera, renderer } = createScene(mountEl);
   const controls = setupControls(camera, renderer.domElement);
 
-  // =============================
-  // State
-  // =============================
   let realBones = {};
   let boneStates = {};
-  let faceController = null;
   let boneProxy = null;
+  let faceController = null;
 
-  let activeSide = "LEFT";
-  let activeSign = "";
+  let mixer = null;
+  const clips = {};
+
+  let activeSide = "RIGHT";
+  let activeSign = null;
   let signStartTime = 0;
 
   const restPose = {};
 
-  // =============================
-  // Load Avatar
-  // =============================
-  const loaderData = loadAvatar(scene, "/rest.glb", () => {
-    realBones = loaderData.realBones;
-    boneStates = loaderData.boneStates;
 
-    faceController = new FaceController(loaderData.morphDict);
+  loadAvatar(scene, "/test1.glb", (loaderData) => {
+    const {
+      gltf,
+      avatarScene,
+      realBones: rb,
+      boneStates: bs,
+      morphDict,
+    } = loaderData;
+
+    realBones = rb;
+    boneStates = bs;
+
     boneProxy = createBoneProxy(realBones, boneStates);
+    faceController = new FaceController(morphDict);
 
-    captureRestPose();
-    applyArmPose(); // initial arm pose
+    // Capture rest pose
+    for (const name in realBones) {
+      restPose[name] = realBones[name].quaternion.clone();
+    }
+
+    applyArmPose();
+
+    mixer = new THREE.AnimationMixer(avatarScene);
+
+    if (gltf.animations && gltf.animations.length) {
+      gltf.animations.forEach((clip) => {
+        clips[clip.name.toLowerCase()] = clip;
+      });
+
+    } else {
+      console.error("NO ANIMATIONS FOUND IN GLB");
+    }
 
     if (onLoaded) onLoaded();
   });
 
-  // =============================
-  // Rest Pose Helpers
-  // =============================
-  function captureRestPose() {
-    for (const name in realBones) {
-      restPose[name] = realBones[name].quaternion.clone();
+
+  function resetAll() {
+    for (const name in restPose) {
+      const bone = realBones[name];
+      const state = boneStates[name];
+      if (!bone || !state) continue;
+
+      bone.quaternion.copy(restPose[name]);
+      state.currentQ.copy(restPose[name]);
+      state.targetQ.copy(restPose[name]);
+      state.velocity.set(0, 0, 0, 0);
     }
   }
 
-  function resetBone(name) {
-    const bone = realBones[name];
-    const state = boneStates[name];
-    if (!bone || !state) return;
-
-    const q = restPose[name];
-    bone.quaternion.copy(q);
-    state.currentQ.copy(q);
-    state.targetQ.copy(q);
-    state.velocity.set(0, 0, 0, 0);
-  }
-
-  function resetAll() {
-    for (const name in restPose) resetBone(name);
-  }
-
-
-
-  
   function setBoneEuler(name, x, y, z) {
     const bone = realBones[name];
     const state = boneStates[name];
@@ -105,9 +112,7 @@ export function initAvatar(mountEl, onLoaded) {
     }
   }
 
-  // =============================
-  // Animation Loop
-  // =============================
+
   const clock = new THREE.Clock();
 
   function animate() {
@@ -117,12 +122,20 @@ export function initAvatar(mountEl, onLoaded) {
     const dt = Math.min(clock.getDelta(), 0.05);
     const now = clock.elapsedTime;
 
-    updatePhysics(dt, boneStates, realBones);
-    updateIdleDrift(now, realBones);
+    // ✅ ALWAYS update mixer
+    if (mixer) mixer.update(dt);
 
+    // Physics only for letters
+    if (!isWordPlaying) {
+      updatePhysics(dt, boneStates, realBones);
+      updateIdleDrift(now, realBones);
+    }
+
+    // Face controller unchanged
     if (faceController) faceController.update(now);
 
-    if (boneProxy) {
+    // Letter ASL only when active
+    if (boneProxy && !isWordPlaying && activeSign) {
       runASLSign(activeSign, boneProxy, now - signStartTime, activeSide);
     }
 
@@ -132,33 +145,74 @@ export function initAvatar(mountEl, onLoaded) {
 
   animate();
 
-  // =============================
-  // Resize
-  // =============================
   const onResize = () => handleResize(mountEl, camera, renderer);
   window.addEventListener("resize", onResize);
 
-  // =============================
-  // Public API
-  // =============================
+  // =========================
+  // PUBLIC API
+  // =========================
   return {
     playSign: (char) => {
-      const c = char.toLowerCase();
-      if (activeSign !== c) {
-        activeSign = c;
-        signStartTime = clock.elapsedTime;
-        faceController?.triggerViseme(c, signStartTime);
-      }
+      if (isWordPlaying) return;
+      activeSign = char.toLowerCase();
+      signStartTime = clock.elapsedTime;
+      faceController?.triggerViseme(activeSign, signStartTime);
+    },
+
+
+    playWord: (input) => {
+      if (!mixer) return false;
+
+      const normalized = input.toLowerCase().trim();
+
+      // Resolve alias (handles 2+ words)
+      const mapped = wordMap[normalized] || normalized;
+
+      const clip = clips[mapped];
+      if (!clip) return false;
+
+      isWordPlaying = true;
+      activeSign = null;
+
+      mixer.stopAllAction();
+      resetAll();
+      applyArmPose();
+
+      const action = mixer.clipAction(clip);
+      action.reset();
+      action.setLoop(THREE.LoopOnce);
+      action.clampWhenFinished = true;
+      action.play();
+
+      const onFinished = (e) => {
+        if (e.action !== action) return;
+        mixer.removeEventListener("finished", onFinished);
+
+        isWordPlaying = false;
+
+        if (clips["idle"]) {
+          const idle = mixer.clipAction(clips["idle"]);
+          idle.reset();
+          idle.setLoop(THREE.LoopRepeat);
+          idle.play();
+        }
+      };
+
+      mixer.addEventListener("finished", onFinished);
+
+      return true;
     },
 
     toggleCameraPosition: () => {
       activeSide = activeSide === "RIGHT" ? "LEFT" : "RIGHT";
-      resetAll();                       // 🔑 full reset
-      applyArmPose();                   // re-apply arm pose
+      resetAll();
+      applyArmPose();
+
       const cfg = CAMERA_POSITIONS[activeSide];
       controls.target.set(cfg.target.x, cfg.target.y, cfg.target.z);
       camera.position.set(cfg.camera.x, cfg.camera.y, cfg.camera.z);
       controls.update();
+
       return activeSide;
     },
 

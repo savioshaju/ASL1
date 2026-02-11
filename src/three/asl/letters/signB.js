@@ -13,10 +13,6 @@ export function signB(bones, t = 0, side = "RIGHT") {
   if (side === "RIGHT") {
 
       // RIGHT ARM (Active)
-      
-     
-      
-
       r("mixamorig9RightHandIndex1", 0, 0, 0);
       r("mixamorig9RightHandIndex2", 0, 0, 0);
       r("mixamorig9RightHandIndex3", 0, 0, 0);
